@@ -1,1 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Dashboard – Online Exam</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">📚 Student Portal</div>
+    <div class="nav-links">
+      <span id="student-info" class="text-muted"></span>
+      <a href="profile.html">Profile</a>
+      <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+      <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </nav>
 
+  <div class="container">
+    <h2 class="mb-2">Welcome, <span id="welcome-name">Student</span></h2>
+
+    <div class="card mb-2">
+      <h3 class="card-title">📢 Announcements</h3>
+      <div id="announcements">Loading...</div>
+    </div>
+
+    <div class="card">
+      <h3 class="card-title">Available Tests</h3>
+      <div id="tests-list">Loading...</div>
+    </div>
+
+    <div class="card mt-3">
+      <h3 class="card-title">My Previous Results</h3>
+      <div id="my-results">Loading...</div>
+    </div>
+  </div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script>
+    let currentUser = null;
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const dark = html.getAttribute('data-theme') === 'dark';
+      html.setAttribute('data-theme', dark ? 'light' : 'dark');
+      localStorage.setItem('theme', dark ? 'light' : 'dark');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    function logout() { auth.signOut().then(() => location.href = '../index.html'); }
+
+    async function init() {
+      currentUser = await requireAuth('student');
+      document.getElementById('welcome-name').textContent = currentUser.name;
+      document.getElementById('student-info').textContent = `${currentUser.rollNumber} | Class ${currentUser.class || '-'} ${currentUser.section || ''}`;
+      loadAnnouncements();
+      loadTests();
+      loadMyResults();
+    }
+
+    async function loadAnnouncements() {
+      const snap = await db.collection('announcements').orderBy('createdAt', 'desc').limit(5).get();
+      const el = document.getElementById('announcements');
+      if (snap.empty) { el.innerHTML = '<p class="text-muted">No announcements</p>'; return; }
+      el.innerHTML = snap.docs.map(d => {
+        const a = d.data();
+        return `<div style="padding:0.5rem 0;border-bottom:1px solid var(--border)"><strong>${a.title}</strong><br><small>${a.message}</small></div>`;
+      }).join('');
+    }
+
+    async function loadTests() {
+      const snap = await db.collection('tests').where('published', '==', true).get();
+      const el = document.getElementById('tests-list');
+      if (snap.empty) { el.innerHTML = '<p class="text-muted">No tests available right now</p>'; return; }
+
+      // Check which tests already submitted
+      const subsSnap = await db.collection('submissions')
+        .where('studentId', '==', currentUser.uid)
+        .get();
+      const submitted = new Set();
+      subsSnap.forEach(d => submitted.add(d.data().testId));
+
+      const now = new Date();
+      let html = '';
+      snap.forEach(doc => {
+        const t = doc.data();
+        const already = submitted.has(doc.id);
+        let canTake = !already;
+        // Check time window
+        if (t.startTime && new Date(t.startTime) > now) canTake = false;
+        if (t.endTime && new Date(t.endTime) < now) canTake = false;
+
+        html += `
+          <div class="flex-between" style="padding:0.9rem 0;border-bottom:1px solid var(--border)">
+            <div>
+              <strong>${t.title}</strong><br>
+              <small class="text-muted">${t.duration} minutes • ${t.totalMarks || 0} marks</small>
+              ${already ? '<span class="badge badge-success" style="margin-left:0.5rem">Submitted</span>' : ''}
+            </div>
+            <div>
+              ${canTake
+                ? `<a href="take-test.html?id=${doc.id}" class="btn btn-primary btn-sm">Start Test</a>`
+                : already
+                  ? `<a href="result.html?test=${doc.id}" class="btn btn-outline btn-sm">View Result</a>`
+                  : `<span class="badge badge-warning">Not Available</span>`
+              }
+            </div>
+          </div>`;
+      });
+      el.innerHTML = html || '<p class="text-muted">No tests available</p>';
+    }
+
+    async function loadMyResults() {
+      const snap = await db.collection('submissions')
+        .where('studentId', '==', currentUser.uid)
+        .orderBy('submittedAt', 'desc')
+        .get();
+      const el = document.getElementById('my-results');
+      if (snap.empty) { el.innerHTML = '<p class="text-muted">No results yet</p>'; return; }
+
+      // Get test titles
+      const testIds = [...new Set(snap.docs.map(d => d.data().testId))];
+      const titles = {};
+      for (const id of testIds) {
+        const t = await db.collection('tests').doc(id).get();
+        if (t.exists) titles[id] = t.data().title;
+      }
+
+      el.innerHTML = `<div class="table-wrap"><table>
+        <thead><tr><th>Test</th><th>Score</th><th>%</th><th>Status</th><th>Date</th></tr></thead>
+        <tbody>
+          ${snap.docs.map(d => {
+            const r = d.data();
+            return `<tr>
+              <td>${titles[r.testId] || r.testId}</td>
+              <td>${r.score ?? '-'} / ${r.totalMarks ?? '-'}</td>
+              <td>${r.percentage != null ? r.percentage.toFixed(1)+'%' : '-'}</td>
+              <td><span class="badge ${r.status==='completed'?'badge-success':'badge-warning'}">${r.status}</span></td>
+              <td>${r.submittedAt ? new Date(r.submittedAt.toDate()).toLocaleDateString() : '-'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>`;
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Taking Test – Online Exam</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo" id="test-title">Loading Test...</div>
+    <div class="nav-links">
+      <div class="timer" id="timer">--:--</div>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="card question-card" id="question-area">
+      <p class="text-muted">Loading questions...</p>
+    </div>
+
+    <div class="flex-between mt-2">
+      <button class="btn btn-outline" id="btn-prev" onclick="prevQuestion()" disabled>← Previous</button>
+      <span id="q-progress">Question 1 of 1</span>
+      <button class="btn btn-primary" id="btn-next" onclick="nextQuestion()">Next →</button>
+    </div>
+
+    <div class="text-center mt-3">
+      <button class="btn btn-success" onclick="confirmSubmit()">Submit Test</button>
+    </div>
+  </div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script>
+    let currentUser = null;
+    let testId = null;
+    let testData = null;
+    let questions = [];
+    let currentIdx = 0;
+    let answers = {}; // questionId -> answer
+    let timerInterval = null;
+    let remainingSeconds = 0;
+    let startTime = null;
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const dark = html.getAttribute('data-theme') === 'dark';
+      html.setAttribute('data-theme', dark ? 'light' : 'dark');
+      localStorage.setItem('theme', dark ? 'light' : 'dark');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+    async function init() {
+      currentUser = await requireAuth('student');
+      testId = new URLSearchParams(location.search).get('id');
+      if (!testId) { alert('Invalid test'); location.href = 'dashboard.html'; return; }
+
+      // Prevent multiple submissions
+      const existing = await db.collection('submissions')
+        .where('studentId', '==', currentUser.uid)
+        .where('testId', '==', testId)
+        .limit(1).get();
+      if (!existing.empty) {
+        alert('You have already submitted this test.');
+        location.href = 'result.html?test=' + testId;
+        return;
+      }
+
+      // Load test
+      const testDoc = await db.collection('tests').doc(testId).get();
+      if (!testDoc.exists || !testDoc.data().published) {
+        alert('Test not available');
+        location.href = 'dashboard.html';
+        return;
+      }
+      testData = testDoc.data();
+      document.getElementById('test-title').textContent = testData.title;
+
+      // Load questions
+      const qSnap = await db.collection('questions')
+        .where('testId', '==', testId)
+        .orderBy('order')
+        .get();
+      questions = qSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      if (testData.shuffleQuestions) {
+        questions = shuffle(questions);
+      }
+      if (testData.shuffleOptions) {
+        questions.forEach(q => {
+          if (q.options && q.options.length) {
+            // Keep track of correct index
+            const correctVal = q.options[parseInt(q.correctAnswer)] || q.correctAnswer;
+            q.options = shuffle([...q.options]);
+            q.correctAnswer = String(q.options.indexOf(correctVal));
+          }
+        });
+      }
+
+      remainingSeconds = (testData.duration || 30) * 60;
+      startTime = Date.now();
+      startTimer();
+      renderQuestion();
+    }
+
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    function startTimer() {
+      updateTimerDisplay();
+      timerInterval = setInterval(() => {
+        remainingSeconds--;
+        updateTimerDisplay();
+        if (remainingSeconds <= 0) {
+          clearInterval(timerInterval);
+          alert('Time is up! Submitting automatically.');
+          submitTest(true);
+        }
+      }, 1000);
+    }
+
+    function updateTimerDisplay() {
+      const m = Math.floor(remainingSeconds / 60);
+      const s = remainingSeconds % 60;
+      document.getElementById('timer').textContent =
+        String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+      if (remainingSeconds < 60) {
+        document.getElementById('timer').style.background = '#fef2f2';
+        document.getElementById('timer').style.color = '#c81e1e';
+      }
+    }
+
+    function renderQuestion() {
+      const q = questions[currentIdx];
+      document.getElementById('q-progress').textContent = `Question ${currentIdx + 1} of ${questions.length}`;
+      document.getElementById('btn-prev').disabled = currentIdx === 0;
+      document.getElementById('btn-next').textContent = currentIdx === questions.length - 1 ? 'Review' : 'Next →';
+
+      let body = `<h3>Q${currentIdx + 1}. ${q.text}</h3>
+        <p class="text-muted">${q.marks} mark(s) • ${q.type.toUpperCase()}</p>`;
+
+      if (q.type === 'mcq') {
+        body += '<div class="options mt-2">';
+        (q.options || []).forEach((opt, i) => {
+          const checked = answers[q.id] == i ? 'selected' : '';
+          body += `<label class="${checked}">
+            <input type="radio" name="ans" value="${i}" ${answers[q.id]==i?'checked':''} onchange="saveAnswer('${q.id}', '${i}')" />
+            ${opt}
+          </label>`;
+        });
+        body += '</div>';
+      } else if (q.type === 'truefalse') {
+        body += `<div class="options mt-2">
+          <label class="${answers[q.id]==='true'?'selected':''}">
+            <input type="radio" name="ans" value="true" ${answers[q.id]==='true'?'checked':''} onchange="saveAnswer('${q.id}','true')" /> True
+          </label>
+          <label class="${answers[q.id]==='false'?'selected':''}">
+            <input type="radio" name="ans" value="false" ${answers[q.id]==='false'?'checked':''} onchange="saveAnswer('${q.id}','false')" /> False
+          </label>
+        </div>`;
+      } else if (q.type === 'fill') {
+        body += `<div class="form-group mt-2">
+          <input type="text" class="form-control" placeholder="Type your answer" value="${answers[q.id]||''}" onchange="saveAnswer('${q.id}', this.value)" />
+        </div>`;
+      } else {
+        // short / long
+        body += `<div class="form-group mt-2">
+          <textarea class="form-control" rows="${q.type==='long'?6:3}" placeholder="Write your answer here..." onchange="saveAnswer('${q.id}', this.value)">${answers[q.id]||''}</textarea>
+        </div>`;
+      }
+
+      document.getElementById('question-area').innerHTML = body;
+    }
+
+    function saveAnswer(qid, val) {
+      answers[qid] = val;
+      // Update selected class
+      document.querySelectorAll('.options label').forEach(l => l.classList.remove('selected'));
+      const selected = document.querySelector(`input[name="ans"][value="${val}"]`);
+      if (selected) selected.closest('label').classList.add('selected');
+    }
+
+    function prevQuestion() {
+      if (currentIdx > 0) { currentIdx--; renderQuestion(); }
+    }
+    function nextQuestion() {
+      if (currentIdx < questions.length - 1) { currentIdx++; renderQuestion(); }
+    }
+
+    function confirmSubmit() {
+      const answered = Object.keys(answers).length;
+      if (!confirm(`You have answered ${answered} of ${questions.length} questions.\nAre you sure you want to submit?`)) return;
+      submitTest(false);
+    }
+
+    async function submitTest(auto) {
+      clearInterval(timerInterval);
+      document.querySelectorAll('button').forEach(b => b.disabled = true);
+
+      // Auto evaluate objective questions
+      let score = 0;
+      let hasSubjective = false;
+      questions.forEach(q => {
+        const ans = answers[q.id];
+        if (q.type === 'mcq' || q.type === 'truefalse') {
+          if (String(ans) === String(q.correctAnswer)) score += (q.marks || 0);
+        } else if (q.type === 'fill') {
+          // Simple case-insensitive match
+          if (ans && q.correctAnswer && ans.trim().toLowerCase() === q.correctAnswer.trim().toLowerCase()) {
+            score += (q.marks || 0);
+          }
+        } else {
+          hasSubjective = true;
+        }
+      });
+
+      const totalMarks = testData.totalMarks || questions.reduce((s, q) => s + (q.marks || 0), 0);
+      const percentage = totalMarks > 0 ? (score / totalMarks) * 100 : 0;
+      const status = hasSubjective ? 'pending' : 'completed';
+
+      const submission = {
+        testId,
+        studentId: currentUser.uid,
+        studentName: currentUser.name,
+        rollNumber: currentUser.rollNumber,
+        class: currentUser.class || '',
+        section: currentUser.section || '',
+        answers,
+        score,
+        totalMarks,
+        percentage: Math.round(percentage * 10) / 10,
+        status,
+        submittedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        timeTaken: Math.round((Date.now() - startTime) / 1000),
+        autoSubmitted: !!auto
+      };
+
+      try {
+        await db.collection('submissions').add(submission);
+        if (testData.showScoreImmediately && !hasSubjective) {
+          alert(`Test submitted!\nYour Score: ${score} / ${totalMarks} (${percentage.toFixed(1)}%)`);
+        } else {
+          alert('Test submitted successfully!' + (hasSubjective ? '\nSome answers are pending teacher evaluation.' : ''));
+        }
+        location.href = 'dashboard.html';
+      } catch (err) {
+        console.error(err);
+        alert('Error submitting: ' + err.message);
+        document.querySelectorAll('button').forEach(b => b.disabled = false);
+      }
+    }
+
+    // Warn before leaving
+    window.onbeforeunload = () => 'Are you sure you want to leave the test?';
+
+    init();
+  </script>
+</body>
+</html>
