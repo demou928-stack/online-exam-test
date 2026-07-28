@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>School Online Examination System</title>
+  <link rel="stylesheet" href="css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+</head>
+<body>
+  <div class="login-page">
+    <div class="login-box">
+      <h1>📚 School Exam Portal</h1>
+      <p class="subtitle">Free Online Examination System</p>
+
+      <div class="tabs">
+        <div class="tab active" data-tab="student">Student Login</div>
+        <div class="tab" data-tab="teacher">Teacher Login</div>
+      </div>
+
+      <!-- Student Login -->
+      <div id="student-form">
+        <div class="form-group">
+          <label>Roll Number</label>
+          <input type="text" id="student-roll" class="form-control" placeholder="Enter Roll Number" required />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="student-pass" class="form-control" placeholder="Enter Password" required />
+        </div>
+        <button class="btn btn-primary" style="width:100%" onclick="studentLogin()">Login as Student</button>
+        <p class="text-center mt-2 text-muted" style="font-size:0.85rem">
+          Don't have an account? Ask your teacher to create one.
+        </p>
+      </div>
+
+      <!-- Teacher Login / Register -->
+      <div id="teacher-form" class="hidden">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" id="teacher-email" class="form-control" placeholder="teacher@school.com" required />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="teacher-pass" class="form-control" placeholder="Password" required />
+        </div>
+        <div class="form-group" id="teacher-name-group" style="display:none">
+          <label>Full Name</label>
+          <input type="text" id="teacher-name" class="form-control" placeholder="Your Name" />
+        </div>
+        <button class="btn btn-primary" style="width:100%" id="teacher-btn" onclick="teacherAuth()">Login as Teacher</button>
+        <p class="text-center mt-2">
+          <a href="#" id="toggle-register" onclick="toggleTeacherRegister(event)">New Teacher? Register here</a>
+        </p>
+      </div>
+
+      <div id="alert-box" class="mt-2"></div>
+    </div>
+  </div>
+
+  <script src="js/firebase-config.js"></script>
+  <script>
+    // Theme
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+
+    // Tabs
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        if (tab.dataset.tab === 'student') {
+          document.getElementById('student-form').classList.remove('hidden');
+          document.getElementById('teacher-form').classList.add('hidden');
+        } else {
+          document.getElementById('student-form').classList.add('hidden');
+          document.getElementById('teacher-form').classList.remove('hidden');
+        }
+      });
+    });
+
+    let isRegister = false;
+    function toggleTeacherRegister(e) {
+      e.preventDefault();
+      isRegister = !isRegister;
+      document.getElementById('teacher-name-group').style.display = isRegister ? 'block' : 'none';
+      document.getElementById('teacher-btn').textContent = isRegister ? 'Register as Teacher' : 'Login as Teacher';
+      document.getElementById('toggle-register').textContent = isRegister ? 'Already have account? Login' : 'New Teacher? Register here';
+    }
+
+    function showAlert(msg, type = 'danger') {
+      const box = document.getElementById('alert-box');
+      box.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+      setTimeout(() => box.innerHTML = '', 4000);
+    }
+
+    // Student Login (Roll Number based)
+    async function studentLogin() {
+      const roll = document.getElementById('student-roll').value.trim().toUpperCase();
+      const pass = document.getElementById('student-pass').value;
+      if (!roll || !pass) return showAlert('Please enter Roll Number and Password');
+
+      try {
+        // Find student by roll number
+        const snap = await db.collection('users')
+          .where('role', '==', 'student')
+          .where('rollNumber', '==', roll)
+          .limit(1)
+          .get();
+
+        if (snap.empty) return showAlert('Student not found. Contact your teacher.');
+
+        const student = snap.docs[0].data();
+        const email = student.email; // we store a synthetic email: roll@school.local
+
+        await auth.signInWithEmailAndPassword(email, pass);
+        window.location.href = 'student/dashboard.html';
+      } catch (err) {
+        console.error(err);
+        showAlert('Invalid Roll Number or Password');
+      }
+    }
+
+    // Teacher Auth
+    async function teacherAuth() {
+      const email = document.getElementById('teacher-email').value.trim();
+      const pass = document.getElementById('teacher-pass').value;
+      const name = document.getElementById('teacher-name').value.trim();
+
+      if (!email || !pass) return showAlert('Email and Password required');
+
+      try {
+        if (isRegister) {
+          if (!name) return showAlert('Please enter your name');
+          const cred = await auth.createUserWithEmailAndPassword(email, pass);
+          await db.collection('users').doc(cred.user.uid).set({
+            role: 'teacher',
+            name: name,
+            email: email,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+          showAlert('Registration successful! Redirecting...', 'success');
+        } else {
+          await auth.signInWithEmailAndPassword(email, pass);
+        }
+        setTimeout(() => window.location.href = 'teacher/dashboard.html', 800);
+      } catch (err) {
+        console.error(err);
+        showAlert(err.message.replace('Firebase: ', ''));
+      }
+    }
+
+    // Auto redirect if already logged in
+    auth.onAuthStateChanged(async (user) => {
+      if (user) {
+        const data = await getCurrentUserData();
+        if (data) {
+          if (data.role === 'teacher') window.location.href = 'teacher/dashboard.html';
+          else if (data.role === 'student') window.location.href = 'student/dashboard.html';
+        }
+      }
+    });
+  </script>
+</body>
+</html>
