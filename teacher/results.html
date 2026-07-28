@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Results – Teacher</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">📊 Results & Export</div>
+    <div class="nav-links">
+      <a href="dashboard.html">← Dashboard</a>
+      <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+      <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="card mb-2">
+      <div class="grid grid-3">
+        <div class="form-group">
+          <label>Filter by Test</label>
+          <select id="filter-test" class="form-control" onchange="loadResults()">
+            <option value="">All Tests</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Filter by Class</label>
+          <input type="text" id="filter-class" class="form-control" placeholder="e.g. 10" oninput="filterTable()" />
+        </div>
+        <div class="form-group">
+          <label>Search (Name / Roll)</label>
+          <input type="text" id="search" class="form-control" placeholder="Search..." oninput="filterTable()" />
+        </div>
+      </div>
+      <div class="flex gap-2 mt-1">
+        <button class="btn btn-success" onclick="exportExcel()">📥 Export Excel (.xlsx)</button>
+        <button class="btn btn-outline" onclick="exportCSV()">📄 Export CSV</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="table-wrap">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Roll No</th>
+              <th>Class</th>
+              <th>Section</th>
+              <th>Test</th>
+              <th>Score</th>
+              <th>Total</th>
+              <th>%</th>
+              <th>Status</th>
+              <th>Submitted</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="results-body">
+            <tr><td colspan="11" class="text-center">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script>
+    let currentUser = null;
+    let allResults = [];
+    let testsMap = {};
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const dark = html.getAttribute('data-theme') === 'dark';
+      html.setAttribute('data-theme', dark ? 'light' : 'dark');
+      localStorage.setItem('theme', dark ? 'light' : 'dark');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    function logout() { auth.signOut().then(() => location.href = '../index.html'); }
+
+    async function init() {
+      currentUser = await requireAuth('teacher');
+      // Load tests for filter
+      const testsSnap = await db.collection('tests').where('createdBy', '==', currentUser.uid).get();
+      const sel = document.getElementById('filter-test');
+      testsSnap.forEach(doc => {
+        testsMap[doc.id] = doc.data().title;
+        sel.innerHTML += `<option value="${doc.id}">${doc.data().title}</option>`;
+      });
+      // Pre-select if URL has test param
+      const urlTest = new URLSearchParams(location.search).get('test');
+      if (urlTest) {
+        sel.value = urlTest;
+      }
+      loadResults();
+    }
+
+    async function loadResults() {
+      const testId = document.getElementById('filter-test').value;
+      let query = db.collection('submissions');
+      if (testId) query = query.where('testId', '==', testId);
+      const snap = await query.orderBy('submittedAt', 'desc').get();
+      allResults = [];
+      snap.forEach(doc => {
+        const d = doc.data();
+        allResults.push({ id: doc.id, ...d, testTitle: testsMap[d.testId] || d.testId });
+      });
+      renderTable(allResults);
+    }
+
+    function renderTable(data) {
+      const tbody = document.getElementById('results-body');
+      if (!data.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No submissions found</td></tr>';
+        return;
+      }
+      tbody.innerHTML = data.map(r => `
+        <tr>
+          <td>${r.studentName || '-'}</td>
+          <td>${r.rollNumber || '-'}</td>
+          <td>${r.class || '-'}</td>
+          <td>${r.section || '-'}</td>
+          <td>${r.testTitle || '-'}</td>
+          <td>${r.score ?? '-'}</td>
+          <td>${r.totalMarks ?? '-'}</td>
+          <td>${r.percentage != null ? r.percentage.toFixed(1) + '%' : '-'}</td>
+          <td><span class="badge ${r.status==='completed'?'badge-success':'badge-warning'}">${r.status||'-'}</span></td>
+          <td>${r.submittedAt ? new Date(r.submittedAt.toDate ? r.submittedAt.toDate() : r.submittedAt).toLocaleString() : '-'}</td>
+          <td><button class="btn btn-outline btn-sm" onclick="printResult('${r.id}')">Print</button></td>
+        </tr>`).join('');
+    }
+
+    function filterTable() {
+      const cls = document.getElementById('filter-class').value.trim().toLowerCase();
+      const search = document.getElementById('search').value.trim().toLowerCase();
+      let filtered = allResults;
+      if (cls) filtered = filtered.filter(r => (r.class||'').toLowerCase().includes(cls));
+      if (search) filtered = filtered.filter(r =>
+        (r.studentName||'').toLowerCase().includes(search) ||
+        (r.rollNumber||'').toLowerCase().includes(search)
+      );
+      renderTable(filtered);
+    }
+
+    function exportExcel() {
+      const data = allResults.map(r => ({
+        'Student Name': r.studentName,
+        'Roll Number': r.rollNumber,
+        'Class': r.class,
+        'Section': r.section,
+        'Test Name': r.testTitle,
+        'Marks Obtained': r.score,
+        'Total Marks': r.totalMarks,
+        'Percentage': r.percentage != null ? r.percentage.toFixed(1) : '',
+        'Status': r.status,
+        'Submission Time': r.submittedAt ? new Date(r.submittedAt.toDate ? r.submittedAt.toDate() : r.submittedAt).toLocaleString() : ''
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Results');
+      XLSX.writeFile(wb, 'Exam_Results_' + new Date().toISOString().slice(0,10) + '.xlsx');
+    }
+
+    function exportCSV() {
+      const data = allResults.map(r => ({
+        'Student Name': r.studentName,
+        'Roll Number': r.rollNumber,
+        'Class': r.class,
+        'Section': r.section,
+        'Test Name': r.testTitle,
+        'Marks Obtained': r.score,
+        'Total Marks': r.totalMarks,
+        'Percentage': r.percentage != null ? r.percentage.toFixed(1) : '',
+        'Status': r.status,
+        'Submission Time': r.submittedAt ? new Date(r.submittedAt.toDate ? r.submittedAt.toDate() : r.submittedAt).toLocaleString() : ''
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const csv = XLSX.utils.sheet_to_csv(ws);
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'Exam_Results_' + new Date().toISOString().slice(0,10) + '.csv';
+      a.click();
+    }
+
+    function printResult(id) {
+      const r = allResults.find(x => x.id === id);
+      if (!r) return;
+      const win = window.open('', '_blank');
+      win.document.write(`
+        <html><head><title>Result - ${r.studentName}</title>
+        <style>body{font-family:sans-serif;padding:2rem} table{border-collapse:collapse;width:100%} td,th{border:1px solid #ccc;padding:8px}</style>
+        </head><body>
+        <h2>Examination Result</h2>
+        <p><strong>Name:</strong> ${r.studentName}<br>
+        <strong>Roll No:</strong> ${r.rollNumber}<br>
+        <strong>Class/Section:</strong> ${r.class} / ${r.section}<br>
+        <strong>Test:</strong> ${r.testTitle}<br>
+        <strong>Score:</strong> ${r.score} / ${r.totalMarks} (${r.percentage?.toFixed(1)}%)<br>
+        <strong>Status:</strong> ${r.status}<br>
+        <strong>Submitted:</strong> ${r.submittedAt ? new Date(r.submittedAt.toDate ? r.submittedAt.toDate() : r.submittedAt).toLocaleString() : '-'}
+        </p>
+        <button onclick="window.print()">Print</button>
+        </body></html>`);
+    }
+
+    init();
+  </script>
+</body>
+</html>

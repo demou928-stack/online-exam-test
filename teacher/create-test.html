@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create Test – Teacher</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">📚 Create New Test</div>
+    <div class="nav-links">
+      <a href="dashboard.html">← Dashboard</a>
+      <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+      <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="card">
+      <h2 class="card-title">Test Details</h2>
+      <div class="grid grid-2">
+        <div class="form-group">
+          <label>Test Title *</label>
+          <input type="text" id="title" class="form-control" placeholder="e.g. Class 10 Science Mid-Term" />
+        </div>
+        <div class="form-group">
+          <label>Duration (minutes) *</label>
+          <input type="number" id="duration" class="form-control" value="30" min="5" />
+        </div>
+        <div class="form-group">
+          <label>Start Date & Time</label>
+          <input type="datetime-local" id="startTime" class="form-control" />
+        </div>
+        <div class="form-group">
+          <label>End Date & Time</label>
+          <input type="datetime-local" id="endTime" class="form-control" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Instructions</label>
+        <textarea id="instructions" class="form-control" rows="3" placeholder="Read all questions carefully..."></textarea>
+      </div>
+      <div class="flex gap-2" style="flex-wrap:wrap">
+        <label><input type="checkbox" id="shuffleQ" checked /> Shuffle Questions</label>
+        <label><input type="checkbox" id="shuffleO" checked /> Shuffle Options</label>
+        <label><input type="checkbox" id="showScore" checked /> Show Score Immediately</label>
+        <label><input type="checkbox" id="published" /> Publish Now</label>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="flex-between mb-2">
+        <h2 class="card-title" style="margin:0">Questions</h2>
+        <button class="btn btn-primary btn-sm" onclick="addQuestion()">+ Add Question</button>
+      </div>
+      <div id="questions-container"></div>
+      <div class="mt-3 flex gap-2">
+        <button class="btn btn-success" onclick="saveTest(false)">Save as Draft</button>
+        <button class="btn btn-primary" onclick="saveTest(true)">Save & Publish</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script>
+    let currentUser = null;
+    let questions = [];
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const dark = html.getAttribute('data-theme') === 'dark';
+      html.setAttribute('data-theme', dark ? 'light' : 'dark');
+      localStorage.setItem('theme', dark ? 'light' : 'dark');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    function logout() { auth.signOut().then(() => location.href = '../index.html'); }
+
+    async function init() {
+      currentUser = await requireAuth('teacher');
+      addQuestion(); // start with one
+    }
+
+    function addQuestion() {
+      const idx = questions.length;
+      questions.push({
+        type: 'mcq',
+        text: '',
+        options: ['', '', '', ''],
+        correctAnswer: '0',
+        marks: 1
+      });
+      renderQuestions();
+    }
+
+    function removeQuestion(idx) {
+      questions.splice(idx, 1);
+      renderQuestions();
+    }
+
+    function updateQ(idx, field, value) {
+      questions[idx][field] = value;
+      if (field === 'type') renderQuestions();
+    }
+
+    function updateOption(qIdx, oIdx, value) {
+      questions[qIdx].options[oIdx] = value;
+    }
+
+    function renderQuestions() {
+      const cont = document.getElementById('questions-container');
+      cont.innerHTML = '';
+      questions.forEach((q, i) => {
+        let optionsHTML = '';
+        if (q.type === 'mcq') {
+          optionsHTML = q.options.map((opt, oi) => `
+            <div class="flex gap-1 mb-1" style="align-items:center">
+              <input type="radio" name="correct-${i}" value="${oi}" ${q.correctAnswer == oi ? 'checked' : ''} onchange="updateQ(${i},'correctAnswer','${oi}')" />
+              <input type="text" class="form-control" value="${opt}" placeholder="Option ${oi+1}" onchange="updateOption(${i},${oi},this.value)" />
+            </div>`).join('');
+        } else if (q.type === 'truefalse') {
+          optionsHTML = `
+            <label><input type="radio" name="correct-${i}" value="true" ${q.correctAnswer==='true'?'checked':''} onchange="updateQ(${i},'correctAnswer','true')" /> True</label>
+            <label style="margin-left:1rem"><input type="radio" name="correct-${i}" value="false" ${q.correctAnswer==='false'?'checked':''} onchange="updateQ(${i},'correctAnswer','false')" /> False</label>`;
+        } else if (q.type === 'fill') {
+          optionsHTML = `<input type="text" class="form-control" value="${q.correctAnswer||''}" placeholder="Correct answer (for auto-check)" onchange="updateQ(${i},'correctAnswer',this.value)" />`;
+        } else {
+          optionsHTML = `<p class="text-muted">Subjective – teacher will evaluate manually</p>`;
+        }
+
+        cont.innerHTML += `
+          <div class="card" style="margin-bottom:1rem;border-left:4px solid var(--primary)">
+            <div class="flex-between mb-1">
+              <strong>Question ${i+1}</strong>
+              <button class="btn btn-danger btn-sm" onclick="removeQuestion(${i})">Remove</button>
+            </div>
+            <div class="grid grid-2">
+              <div class="form-group">
+                <label>Type</label>
+                <select class="form-control" onchange="updateQ(${i},'type',this.value)">
+                  <option value="mcq" ${q.type==='mcq'?'selected':''}>MCQ</option>
+                  <option value="truefalse" ${q.type==='truefalse'?'selected':''}>True/False</option>
+                  <option value="fill" ${q.type==='fill'?'selected':''}>Fill in the Blanks</option>
+                  <option value="short" ${q.type==='short'?'selected':''}>Short Answer</option>
+                  <option value="long" ${q.type==='long'?'selected':''}>Long Answer</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Marks</label>
+                <input type="number" class="form-control" value="${q.marks}" min="0.5" step="0.5" onchange="updateQ(${i},'marks',parseFloat(this.value))" />
+              </div>
+            </div>
+            <div class="form-group">
+              <label>Question Text</label>
+              <textarea class="form-control" rows="2" onchange="updateQ(${i},'text',this.value)">${q.text}</textarea>
+            </div>
+            <div class="form-group">
+              <label>Options / Answer</label>
+              ${optionsHTML}
+            </div>
+          </div>`;
+      });
+    }
+
+    async function saveTest(publish) {
+      const title = document.getElementById('title').value.trim();
+      const duration = parseInt(document.getElementById('duration').value);
+      if (!title || !duration) return alert('Title and Duration are required');
+      if (questions.length === 0) return alert('Add at least one question');
+
+      const totalMarks = questions.reduce((s, q) => s + (q.marks || 0), 0);
+      const testData = {
+        title,
+        duration,
+        startTime: document.getElementById('startTime').value || null,
+        endTime: document.getElementById('endTime').value || null,
+        instructions: document.getElementById('instructions').value,
+        shuffleQuestions: document.getElementById('shuffleQ').checked,
+        shuffleOptions: document.getElementById('shuffleO').checked,
+        showScoreImmediately: document.getElementById('showScore').checked,
+        published: publish || document.getElementById('published').checked,
+        totalMarks,
+        createdBy: currentUser.uid,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+
+      try {
+        const testRef = await db.collection('tests').add(testData);
+        // Save questions
+        const batch = db.batch();
+        questions.forEach((q, i) => {
+          const qRef = db.collection('questions').doc();
+          batch.set(qRef, {
+            testId: testRef.id,
+            type: q.type,
+            text: q.text,
+            options: q.options || [],
+            correctAnswer: q.correctAnswer || '',
+            marks: q.marks || 1,
+            order: i
+          });
+        });
+        await batch.commit();
+        alert('Test saved successfully!');
+        location.href = 'dashboard.html';
+      } catch (err) {
+        console.error(err);
+        alert('Error saving test: ' + err.message);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

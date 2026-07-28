@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Manage Students – Teacher</title>
+  <link rel="stylesheet" href="../css/style.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="logo">👥 Manage Students</div>
+    <div class="nav-links">
+      <a href="dashboard.html">← Dashboard</a>
+      <button class="theme-toggle" onclick="toggleTheme()">🌓</button>
+      <button class="btn btn-outline btn-sm" onclick="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="card mb-2">
+      <h3 class="card-title">Add New Student</h3>
+      <div class="grid grid-3">
+        <div class="form-group">
+          <label>Full Name *</label>
+          <input type="text" id="s-name" class="form-control" />
+        </div>
+        <div class="form-group">
+          <label>Roll Number *</label>
+          <input type="text" id="s-roll" class="form-control" placeholder="e.g. 10A01" />
+        </div>
+        <div class="form-group">
+          <label>Password *</label>
+          <input type="text" id="s-pass" class="form-control" placeholder="Set a password" />
+        </div>
+        <div class="form-group">
+          <label>Class</label>
+          <input type="text" id="s-class" class="form-control" placeholder="10" />
+        </div>
+        <div class="form-group">
+          <label>Section</label>
+          <input type="text" id="s-section" class="form-control" placeholder="A" />
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="addStudent()">Add Student</button>
+      <div id="add-alert" class="mt-1"></div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between mb-2">
+        <h3 class="card-title" style="margin:0">All Students</h3>
+        <input type="text" id="search-students" class="form-control" style="max-width:250px" placeholder="Search..." oninput="filterStudents()" />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Roll No</th><th>Class</th><th>Section</th><th>Action</th></tr>
+          </thead>
+          <tbody id="students-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script>
+    let currentUser = null;
+    let allStudents = [];
+
+    function toggleTheme() {
+      const html = document.documentElement;
+      const dark = html.getAttribute('data-theme') === 'dark';
+      html.setAttribute('data-theme', dark ? 'light' : 'dark');
+      localStorage.setItem('theme', dark ? 'light' : 'dark');
+    }
+    if (localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    function logout() { auth.signOut().then(() => location.href = '../index.html'); }
+
+    async function init() {
+      currentUser = await requireAuth('teacher');
+      loadStudents();
+    }
+
+    async function loadStudents() {
+      const snap = await db.collection('users').where('role', '==', 'student').get();
+      allStudents = [];
+      snap.forEach(doc => allStudents.push({ id: doc.id, ...doc.data() }));
+      renderStudents(allStudents);
+    }
+
+    function renderStudents(list) {
+      const tbody = document.getElementById('students-body');
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No students yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = list.map(s => `
+        <tr>
+          <td>${s.name}</td>
+          <td>${s.rollNumber}</td>
+          <td>${s.class || '-'}</td>
+          <td>${s.section || '-'}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="deleteStudent('${s.id}')">Delete</button></td>
+        </tr>`).join('');
+    }
+
+    function filterStudents() {
+      const q = document.getElementById('search-students').value.toLowerCase();
+      const filtered = allStudents.filter(s =>
+        (s.name||'').toLowerCase().includes(q) ||
+        (s.rollNumber||'').toLowerCase().includes(q)
+      );
+      renderStudents(filtered);
+    }
+
+    async function addStudent() {
+      const name = document.getElementById('s-name').value.trim();
+      const roll = document.getElementById('s-roll').value.trim().toUpperCase();
+      const pass = document.getElementById('s-pass').value;
+      const cls = document.getElementById('s-class').value.trim();
+      const section = document.getElementById('s-section').value.trim();
+      const alertBox = document.getElementById('add-alert');
+
+      if (!name || !roll || !pass) {
+        alertBox.innerHTML = '<div class="alert alert-danger">Name, Roll Number and Password required</div>';
+        return;
+      }
+
+      // Check duplicate roll
+      const exist = await db.collection('users').where('rollNumber', '==', roll).limit(1).get();
+      if (!exist.empty) {
+        alertBox.innerHTML = '<div class="alert alert-danger">Roll Number already exists</div>';
+        return;
+      }
+
+      try {
+        // Create synthetic email for Firebase Auth
+        const email = roll.toLowerCase() + '@school.local';
+        // We need to create auth user. Since we are already logged in as teacher,
+        // we use a secondary app instance or just store and let student register.
+        // Simple approach: create user with a temporary secondary auth.
+        // For simplicity in free tier pure frontend: create the auth account.
+        const secondaryApp = firebase.initializeApp(firebase.app().options, 'Secondary');
+        const secondaryAuth = secondaryApp.auth();
+        const cred = await secondaryAuth.createUserWithEmailAndPassword(email, pass);
+        await db.collection('users').doc(cred.user.uid).set({
+          role: 'student',
+          name,
+          rollNumber: roll,
+          email,
+          class: cls,
+          section,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        await secondaryAuth.signOut();
+        secondaryApp.delete();
+
+        alertBox.innerHTML = '<div class="alert alert-success">Student added successfully!</div>';
+        document.getElementById('s-name').value = '';
+        document.getElementById('s-roll').value = '';
+        document.getElementById('s-pass').value = '';
+        document.getElementById('s-class').value = '';
+        document.getElementById('s-section').value = '';
+        loadStudents();
+      } catch (err) {
+        console.error(err);
+        alertBox.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
+      }
+    }
+
+    async function deleteStudent(uid) {
+      if (!confirm('Delete this student? This cannot be undone.')) return;
+      await db.collection('users').doc(uid).delete();
+      // Note: Auth user remains, but cannot login usefully without Firestore record
+      loadStudents();
+    }
+
+    init();
+  </script>
+</body>
+</html>
